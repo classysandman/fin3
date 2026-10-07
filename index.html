@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filebase</title>
+<style>
+:root{--bg:#f4f5f2;--card:#fff;--tx:#18211f;--mu:#62706c;--bd:#dde2dd;--ac:#0f6b5c;--acd:#0a4f44;--er:#b3382c;--ok:#1d7a4d}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 Georgia,'Times New Roman',serif;background:var(--bg);color:var(--tx)}
+h1,h2,h3,button,input,select,label,th,.tab,.nav{font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
+h1{font-size:26px;margin:0 0 4px}h2{font-size:20px;margin:0 0 14px}h3{font-size:15px;margin:0 0 6px}
+.wrap{max-width:960px;margin:0 auto;padding:20px}
+.auth{max-width:420px;margin:8vh auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:20px;margin-bottom:16px}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--bd)}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin:16px 0}
+.tab{border:1px solid var(--bd);background:var(--card);padding:7px 14px;border-radius:6px;cursor:pointer;font-size:14px;color:var(--tx)}
+.tab.on{background:var(--ac);border-color:var(--ac);color:#fff}
+label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
+input,select{width:100%;padding:9px 10px;border:1px solid var(--bd);border-radius:6px;font-size:14px;background:#fff;color:var(--tx)}
+input[type=checkbox]{width:auto;margin-right:6px}
+button{cursor:pointer;border:1px solid var(--ac);background:var(--ac);color:#fff;padding:8px 14px;border-radius:6px;font-size:14px}
+button:hover{background:var(--acd)}
+button.ghost{background:transparent;color:var(--ac)}button.ghost:hover{background:#e8f1ef}
+button.danger{background:transparent;border-color:var(--er);color:var(--er)}button.danger:hover{background:#faeceb}
+button.sm{padding:4px 10px;font-size:13px}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1;min-width:150px}
+.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.plan{border:1px solid var(--bd);border-radius:8px;padding:16px;background:#fff}
+.plan.cur{border:2px solid var(--ac)}
+.plan p{margin:4px 0;color:var(--mu);font-size:14px}
+.big{font-size:30px;font-family:system-ui,sans-serif;font-weight:700}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;font-size:13px;color:var(--mu);padding:8px;border-bottom:1px solid var(--bd)}
+td{padding:8px;border-bottom:1px solid var(--bd);vertical-align:middle}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.mu{color:var(--mu)}.tag{font:12px system-ui;padding:2px 8px;border-radius:10px;background:#e8f1ef;color:var(--acd)}
+.tag.warn{background:#fbf0d9;color:#7a5600}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 16px;border-radius:6px;color:#fff;font:14px system-ui;display:none;z-index:9}
+dialog{border:1px solid var(--bd);border-radius:8px;padding:20px;max-width:420px;width:92%}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.bill td:last-child,.bill th:last-child{text-align:right}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<dialog id="dlg"></dialog>
+<div id="toast" role="status"></div>
+<script>
+const API = 'http://localhost:3000';
+const INDUSTRIES = ['finance','ecommerce','healthcare','education','technology','manufacturing','other'];
+const $ = (s, e = document) => e.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = n => '$' + Number(n).toFixed(2);
+const size = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+const date = d => new Date(d).toLocaleDateString();
+let token = localStorage.getItem('token'), me = null, company = null, tab = 'plan', authMode = 'login';
+
+function toast(text, ok = true) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.style.background = ok ? 'var(--ok)' : 'var(--er)';
+  t.style.display = 'block';
+  clearTimeout(toast.id);
+  toast.id = setTimeout(() => (t.style.display = 'none'), 3500);
+}
+
+async function api(path, opts = {}) {
+  const headers = {};
+  if (token) headers.Authorization = 'Bearer ' + token;
+  let body = opts.body;
+  if (body && !(body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(body);
+  }
+  const res = await fetch(API + path, { ...opts, headers, body });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    if (res.status === 401 && token && path !== '/auth/login') logout();
+    const m = data && data.message;
+    throw new Error(Array.isArray(m) ? m.join(', ') : m || res.statusText);
+  }
+  return data;
+}
+
+function logout() {
+  token = null; me = null; company = null;
+  localStorage.removeItem('token');
+  render();
+}
+
+function field(name, label, type = 'text', extra = '') {
+  return `<label for="${name}">${label}</label><input id="${name}" name="${name}" type="${type}" required ${extra}>`;
+}
+
+function renderAuth() {
+  const login = authMode === 'login';
+  $('#app').innerHTML = `<div class="auth"><h1>Filebase</h1>
+    <p class="mu">Shared file spaces for your company's spreadsheets.</p>
+    <div class="card"><h2>${login ? 'Log in' : 'Register your company'}</h2>
+    <form data-form="${authMode}">
+      ${login ? '' : field('companyName', 'Company name')}
+      ${field('email', 'Email', 'email')}
+      ${field('password', 'Password', 'password', login ? '' : 'minlength="8"')}
+      ${login ? '' : field('country', 'Country') + `<label for="industry">Industry</label><select id="industry" name="industry">${INDUSTRIES.map(i => `<option value="${i}">${i}</option>`).join('')}</select>`}
+      <p><button type="submit">${login ? 'Log in' : 'Register'}</button></p>
+    </form>
+    <button class="ghost sm" data-act="switch">${login ? 'Need an account? Register' : 'Have an account? Log in'}</button></div></div>`;
+}
+
+function renderEmployeeActivation(t) {
+  $('#app').innerHTML = `<div class="auth"><h1>Join your company</h1>
+    <div class="card"><h2>Set your password</h2>
+    <form data-form="activate-employee"><input type="hidden" name="token" value="${esc(t)}">
+    ${field('password', 'Password', 'password', 'minlength="8"')}
+    <p><button type="submit">Activate account</button></p></form></div></div>`;
+}
+
+async function render() {
+  const q = new URLSearchParams(location.search);
+  if (location.pathname.includes('activate-employee') && q.get('token')) return renderEmployeeActivation(q.get('token'));
+  if (!token) return renderAuth();
+  try {
+    if (!me) {
+      me = await api('/auth/me');
+      company = await api('/companies/me');
+    }
+  } catch { return renderAuth(); }
+  const admin = me.role === 'admin';
+  const tabs = [['plan', 'Plan'], ...(admin ? [['employees', 'Employees']] : []), ['files', 'Files'], ...(admin ? [['billing', 'Billing']] : []), ['account', 'Account']];
+  if (!tabs.some(t => t[0] === tab)) tab = 'plan';
+  $('#app').innerHTML = `<div class="nav"><strong>${esc(company.name)}</strong>
+    <span><span class="tag">${me.role}</span> <button class="ghost sm" data-act="logout">Log out</button></span></div>
+    <div class="wrap"><div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div>
+    <div id="view"><p class="mu">Loading…</p></div></div>`;
+  try { await views[tab](admin); } catch (e) { $('#view').innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`; }
+}
+
+const views = {
+  async plan(admin) {
+    const [plans, cur] = await Promise.all([api('/subscriptions/plans'), api('/subscriptions/current').catch(() => null)]);
+    const price = p => p.fixedPrice ? `${money(p.fixedPrice)} / month` : p.pricePerEmployee ? `${money(p.pricePerEmployee)} per employee / month` : 'Free';
+    $('#view').innerHTML = `<h2>${cur ? 'Your plan' : 'Choose a plan to get started'}</h2>
+      ${cur ? `<p class="mu">Billing day: ${cur.billingDay} of each month. Employees: ${cur.employeeCount}.</p>` : ''}
+      <div class="plans">${plans.map(p => `<div class="plan ${cur && cur.plan === p.type ? 'cur' : ''}">
+        <h3>${p.type[0].toUpperCase() + p.type.slice(1)}</h3><div class="big">${price(p).split(' ')[0]}</div>
+        <p>${price(p).split(' ').slice(1).join(' ')}</p>
+        <p>${p.monthlyFileLimit} files / month</p>
+        <p>${p.maxEmployees === null ? 'Unlimited employees' : p.maxEmployees === 0 ? 'Admin only' : 'Up to ' + p.maxEmployees + ' employees'}</p>
+        ${p.overagePricePerFile ? `<p>${money(p.overagePricePerFile)} per extra file</p>` : ''}
+        ${admin ? (cur && cur.plan === p.type ? '<p class="tag">Current plan</p>' : `<button data-act="plan" data-plan="${p.type}" data-has="${cur ? 1 : 0}">${cur ? 'Switch to this plan' : 'Select plan'}</button>`) : ''}
+      </div>`).join('')}</div>`;
+  },
+
+  async employees() {
+    const list = await api('/employees');
+    $('#view').innerHTML = `<div class="card"><h2>Add an employee</h2>
+      <form data-form="employee" class="row">
+        <div>${field('name', 'Name')}</div><div>${field('email', 'Email', 'email')}</div>
+        <div style="align-self:end"><button type="submit">Send invitation</button></div></form></div>
+      <div class="card scroll"><h2>Employees</h2>${list.length ? `<table><tr><th>Name</th><th>Email</th><th>Status</th><th></th></tr>
+      ${list.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td>
+        <td><span class="tag ${u.isActive ? '' : 'warn'}">${u.isActive ? 'Active' : 'Invited'}</span></td>
+        <td><button class="danger sm" data-act="del-emp" data-id="${u._id}">Remove</button></td></tr>`).join('')}</table>`
+      : '<p class="mu">No employees yet. Invite your first teammate above.</p>'}</div>`;
+  },
+
+  async files(admin) {
+    const [files, emps] = await Promise.all([api('/files'), admin ? api('/employees') : []]);
+    views._emps = emps;
+    $('#view').innerHTML = `<div class="card"><h2>Upload a file</h2>
+      <form data-form="upload">
+        <label for="file">File (csv, xls or xlsx, up to 10 MB)</label><input id="file" name="file" type="file" accept=".csv,.xls,.xlsx" required>
+        <label for="visibility">Who can see it</label>
+        <select id="visibility" name="visibility"><option value="all">Everyone in the company</option><option value="restricted">${admin ? 'Selected employees only' : 'Only me'}</option></select>
+        <div id="picker" hidden>${admin ? picker(emps, []) : ''}</div>
+        <p><button type="submit">Upload</button></p></form></div>
+      <div class="card scroll"><h2>Files</h2>${files.length ? `<table><tr><th>Name</th><th>Uploaded by</th><th>Size</th><th>Visible to</th><th>Date</th><th></th></tr>
+      ${files.map(f => `<tr><td>${esc(f.originalName)}</td><td>${esc(f.uploadedByEmail)}</td><td>${size(f.size)}</td>
+        <td><span class="tag ${f.visibility === 'all' ? '' : 'warn'}">${f.visibility === 'all' ? 'Everyone' : 'Selected'}</span></td><td>${date(f.createdAt)}</td>
+        <td class="acts"><button class="ghost sm" data-act="download" data-id="${f._id}">Download</button>
+        ${admin || f.uploadedBy === me.sub ? `<button class="ghost sm" data-act="share" data-id="${f._id}" data-vis="${f.visibility}" data-allowed="${(f.allowedUsers || []).join(',')}">Sharing</button>
+        <button class="danger sm" data-act="del-file" data-id="${f._id}">Delete</button>` : ''}</td></tr>`).join('')}</table>`
+      : '<p class="mu">No files yet. Upload a spreadsheet above.</p>'}</div>`;
+  },
+
+  async billing() {
+    const b = await api('/billing/current');
+    $('#view').innerHTML = `<div class="card"><h2>This month's bill</h2>
+      <p class="mu">Period ${date(b.period.start)} to ${date(b.period.end)}. Next payment on ${date(b.nextPaymentDate)} (${b.daysUntilPayment} days).</p>
+      <div class="scroll"><table class="bill"><tr><th>Item</th><th>Amount</th></tr>
+      <tr><td>${b.plan} plan fixed fee</td><td>${money(b.fixedFee)}</td></tr>
+      <tr><td>${b.employees.count} employees at ${money(b.employees.pricePerEmployee)}</td><td>${money(b.employees.cost)}</td></tr>
+      <tr><td>${b.files.overageFiles} extra files at ${money(b.files.overagePricePerFile)}</td><td>${money(b.files.overageCost)}</td></tr>
+      <tr><td><strong>Total due</strong></td><td><strong>${money(b.total)}</strong></td></tr></table></div>
+      <p class="mu">Files uploaded this period: ${b.files.used} of ${b.files.limit}.</p></div>`;
+  },
+
+  async account(admin) {
+    $('#view').innerHTML = `<div class="card"><h2>Company</h2>
+      <p>${esc(company.name)}<br><span class="mu">${esc(company.country)}, ${esc(company.industry)}</span></p>
+      ${admin ? `<form data-form="company"><div class="row">
+        <div><label for="name">Name</label><input id="name" name="name" value="${esc(company.name)}"></div>
+        <div><label for="country">Country</label><input id="country" name="country" value="${esc(company.country)}"></div>
+        <div><label for="industry">Industry</label><select id="industry" name="industry">${INDUSTRIES.map(i => `<option ${i === company.industry ? 'selected' : ''}>${i}</option>`).join('')}</select></div></div>
+        <p><button type="submit">Save changes</button></p></form>` : ''}</div>
+      <div class="card"><h2>Change password</h2><form data-form="password">
+        ${field('currentPassword', 'Current password', 'password')}${field('newPassword', 'New password', 'password', 'minlength="8"')}
+        <p><button type="submit">Change password</button></p></form></div>`;
+  },
+};
+
+function picker(emps, selected) {
+  if (!emps.length) return '<p class="mu">Add employees first to share files with them.</p>';
+  return `<label>Employees who can see it</label>${emps.map(e => `<label style="font-weight:400"><input type="checkbox" name="allowed" value="${e._id}" ${selected.includes(e._id) ? 'checked' : ''}>${esc(e.name || e.email)}</label>`).join('')}`;
+}
+
+const forms = {
+  async login(d) {
+    token = (await api('/auth/login', { method: 'POST', body: d })).accessToken;
+    localStorage.setItem('token', token);
+    tab = 'plan';
+  },
+  async register(d) {
+    const r = await api('/auth/register', { method: 'POST', body: d });
+    authMode = 'login';
+    toast(r.message);
+  },
+  async 'activate-employee'(d) {
+    await api('/auth/activate-employee', { method: 'POST', body: d });
+    history.replaceState(null, '', '/');
+    toast('Account activated. You can now log in.');
+  },
+  async employee(d) { await api('/employees', { method: 'POST', body: d }); toast('Invitation sent'); },
+  async company(d) { company = await api('/companies/me', { method: 'PATCH', body: d }); toast('Changes saved'); },
+  async password(d) { await api('/auth/change-password', { method: 'PATCH', body: d }); toast('Password changed'); },
+  async upload(d, form) {
+    const fd = new FormData();
+    fd.append('file', form.file.files[0]);
+    fd.append('visibility', d.visibility);
+    if (d.visibility === 'restricted') form.querySelectorAll('[name=allowed]:checked').forEach(c => fd.append('allowedUserIds', c.value));
+    await api('/files', { method: 'POST', body: fd });
+    toast('File uploaded');
+  },
+};
+
+document.addEventListener('submit', async e => {
+  const form = e.target.closest('[data-form]');
+  if (!form) return;
+  e.preventDefault();
+  const btn = form.querySelector('[type=submit]');
+  btn.disabled = true;
+  try {
+    await forms[form.dataset.form](Object.fromEntries(new FormData(form)), form);
+    if (form.dataset.form === 'password') form.reset();
+    await render();
+  } catch (err) { toast(err.message, false); }
+  btn.disabled = false;
+});
+
+document.addEventListener('change', e => {
+  if (e.target.id === 'visibility') $('#picker').hidden = e.target.value !== 'restricted';
+});
+
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-act],[data-tab]');
+  if (!t) return;
+  try {
+    if (t.dataset.tab) { tab = t.dataset.tab; return render(); }
+    const id = t.dataset.id;
+    switch (t.dataset.act) {
+      case 'switch': authMode = authMode === 'login' ? 'register' : 'login'; return renderAuth();
+      case 'logout': return logout();
+      case 'plan':
+        await api('/subscriptions', { method: t.dataset.has === '1' ? 'PATCH' : 'POST', body: { plan: t.dataset.plan } });
+        toast('Plan updated'); break;
+      case 'del-emp':
+        if (!confirm('Remove this employee?')) return;
+        await api('/employees/' + id, { method: 'DELETE' }); toast('Employee removed'); break;
+      case 'del-file':
+        if (!confirm('Delete this file?')) return;
+        await api('/files/' + id, { method: 'DELETE' }); toast('File deleted'); break;
+      case 'download': {
+        const r = await api(`/files/${id}/download`);
+        window.open(r.url, '_blank');
+        return;
+      }
+      case 'share': {
+        const emps = views._emps || [];
+        const allowed = (t.dataset.allowed || '').split(',').filter(Boolean);
+        const dlg = $('#dlg');
+        dlg.innerHTML = `<form method="dialog" data-share="${id}"><h2>Who can see this file</h2>
+          <select id="shareVis"><option value="all" ${t.dataset.vis === 'all' ? 'selected' : ''}>Everyone in the company</option>
+          <option value="restricted" ${t.dataset.vis !== 'all' ? 'selected' : ''}>${emps.length ? 'Selected employees only' : 'Only me'}</option></select>
+          <div id="sharePick">${picker(emps, allowed)}</div>
+          <p class="acts"><button type="button" data-act="save-share">Save changes</button><button class="ghost" value="cancel">Cancel</button></p></form>`;
+        dlg.showModal();
+        return;
+      }
+      case 'save-share': {
+        const dlg = $('#dlg');
+        const fid = $('[data-share]', dlg).dataset.share;
+        const visibility = $('#shareVis').value;
+        const allowedUserIds = [...dlg.querySelectorAll('[name=allowed]:checked')].map(c => c.value);
+        await api(`/files/${fid}/permissions`, { method: 'PATCH', body: { visibility, allowedUserIds } });
+        dlg.close(); toast('Sharing updated'); break;
+      }
+      default: return;
+    }
+    await render();
+  } catch (err) { toast(err.message, false); }
+});
+
+render();
+</script>
+</body>
+</html>
